@@ -1,0 +1,743 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Neon Cat's Cradle</title>
+<meta name="description" content="Neon strings between your fingertips. Hand tracking in the browser.">
+<meta name="theme-color" content="#040921">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Cradle">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  /* Layout: full-bleed canvas, HUD pinned to the corners, start panel centered. */
+  :root {
+    --midnight: #040921;
+    --ink: #d8f6ff;
+    --dim: #7088bb;
+    --cyan: #00f0ff;
+    --magenta: #ff2bd6;
+    --yellow: #ffe23a;
+    --display: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+    color-scheme: dark;
+  }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--midnight); color: var(--ink); font: 13px/1.5 var(--mono); }
+  canvas { display: block; position: fixed; inset: 0; z-index: 0; }
+  #video { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+  /* CRT overlay: only in Void view. Pure CSS, so it costs the canvas nothing. */
+  .scanlines, .vignette { position: fixed; inset: 0; pointer-events: none; z-index: 1; }
+  .scanlines {
+    background: repeating-linear-gradient(to bottom, rgba(140, 180, 255, .07) 0 1px, transparent 1px 3px);
+    opacity: 0; transition: opacity .5s;
+  }
+  .scanlines::after {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(to bottom, transparent 0%, rgba(120, 170, 255, .06) 50%, transparent 100%);
+    background-size: 100% 30%; background-repeat: no-repeat;
+    animation: roll 7s linear infinite;
+  }
+  body.void .scanlines { opacity: 1; }
+  .vignette { background: radial-gradient(ellipse at center, transparent 50%, rgba(0, 0, 8, .7) 100%); }
+  @keyframes roll { from { background-position: 0 -40%; } to { background-position: 0 140%; } }
+
+  /* HUD */
+  .hud { position: fixed; z-index: 2; transition: opacity .3s; }
+  body.clean .hud.hideable { opacity: 0; pointer-events: none; }
+  /* safe-area insets keep the HUD clear of notches and home bars on phones */
+  :root {
+    --st: env(safe-area-inset-top, 0px); --sr: env(safe-area-inset-right, 0px);
+    --sb: env(safe-area-inset-bottom, 0px); --sl: env(safe-area-inset-left, 0px);
+  }
+  .readout { top: calc(16px + var(--st)); left: calc(16px + var(--sl)); display: grid; gap: 6px; min-width: 210px; }
+  .brand { font: 700 18px/1 var(--display); letter-spacing: .16em; text-transform: uppercase;
+           text-shadow: 0 0 12px rgba(0, 240, 255, .7); }
+  .brand small { display: block; margin-top: 4px; font: 400 10px/1 var(--mono); letter-spacing: .2em; color: var(--dim); text-shadow: none; }
+  .stat { display: flex; justify-content: space-between; gap: 16px; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .stat b { color: var(--ink); font-weight: 600; }
+  .meter { height: 3px; background: rgba(112, 136, 187, .25); overflow: hidden; }
+  .meter i { display: block; height: 100%; width: 0%;
+             background: linear-gradient(90deg, var(--cyan), var(--magenta), var(--yellow));
+             box-shadow: 0 0 8px var(--magenta); transition: width .25s; }
+
+  .controls { top: calc(16px + var(--st)); right: calc(16px + var(--sr)); display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; max-width: 60vw; }
+  button {
+    font: 600 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase;
+    color: var(--ink); background: rgba(4, 9, 33, .55); border: 1px solid rgba(0, 240, 255, .4);
+    padding: 9px 12px; cursor: pointer; transition: border-color .2s, box-shadow .2s, color .2s;
+  }
+  button:hover { border-color: var(--cyan); box-shadow: 0 0 14px rgba(0, 240, 255, .35); }
+  button:focus-visible { outline: 2px solid var(--yellow); outline-offset: 2px; }
+  button kbd { font: inherit; color: var(--cyan); margin-right: 6px; }
+  button[aria-pressed="true"] { border-color: var(--magenta); box-shadow: 0 0 14px rgba(255, 43, 214, .35); }
+
+  .hint { bottom: calc(16px + var(--sb)); left: calc(16px + var(--sl)); right: calc(16px + var(--sr)); color: var(--dim); font-size: 11px; letter-spacing: .06em; }
+  body:not(.live) .controls { visibility: hidden; }   /* buttons appear once the camera is running */
+  #bFlip { display: none; }
+  body.touch #bFlip { display: inline-block; }
+  body.touch button kbd { display: none; }   /* no keyboard on a phone */
+  body.touch button { padding: 12px 14px; }  /* bigger tap targets */
+  .touch-only { display: none; }
+  body.touch .touch-only { display: list-item; }
+  body.touch .desk-only { display: none; }
+
+  /* Start / status panel */
+  .panel {
+    position: fixed; z-index: 3; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: min(420px, calc(100vw - 32px)); box-sizing: border-box; padding: 28px;
+    background: rgba(4, 9, 33, .78); border: 1px solid rgba(0, 240, 255, .35);
+    box-shadow: 0 0 40px rgba(0, 240, 255, .12), inset 0 0 30px rgba(255, 43, 214, .06);
+    backdrop-filter: blur(6px); display: grid; gap: 16px; text-align: left;
+  }
+  .panel h1 { margin: 0; font: 700 28px/1.05 var(--display); letter-spacing: .08em; text-transform: uppercase; text-wrap: balance;
+              background: linear-gradient(90deg, var(--cyan), var(--magenta) 55%, var(--yellow));
+              -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .panel p { margin: 0; color: var(--dim); }
+  .panel ol { margin: 0; padding-left: 18px; color: var(--ink); display: grid; gap: 4px; }
+  .panel .go { font-size: 13px; padding: 13px 16px; border-color: var(--cyan); justify-self: start; }
+  .panel .go:disabled { opacity: .5; cursor: progress; }
+  .panel[hidden] { display: none; }
+  .status { min-height: 1.5em; color: var(--yellow); }
+  .status.err { color: #ff6b8b; }
+
+  @media (max-width: 560px) {
+    .readout { min-width: 0; right: calc(16px + var(--sr)); }
+    .controls { top: auto; bottom: calc(16px + var(--sb)); left: calc(16px + var(--sl)); right: calc(16px + var(--sr)); max-width: none; justify-content: flex-start; }
+    .hint { display: none; }
+  }
+  @media (max-height: 480px) {               /* phone in landscape: compact HUD */
+    .readout { gap: 2px; min-width: 170px; }
+    .readout .stat:nth-of-type(n+4) { display: none; }
+    .hint { display: none; }
+    .panel { padding: 18px; gap: 10px; max-height: calc(100% - 24px); overflow-y: auto; }
+    .panel h1 { font-size: 22px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .scanlines::after { animation: none; }
+  }
+</style>
+</head>
+<body>
+<video id="video" playsinline muted></video>
+<div class="scanlines"></div>
+<div class="vignette"></div>
+
+<div class="hud readout hideable" aria-live="polite">
+  <div class="brand">Cat's Cradle<small>// hand-string rig</small></div>
+  <div class="stat">hands <b id="hHands">0 / 2</b></div>
+  <div class="stat">tension <b id="hTension">--</b></div>
+  <div class="meter"><i id="hMeter"></i></div>
+  <div class="stat">render <b id="hFps">--</b></div>
+  <div class="stat">tracking <b id="hDet">--</b></div>
+</div>
+
+<div class="hud controls">
+  <button id="bView" type="button" aria-pressed="false"><kbd>V</kbd>View: Camera</button>
+  <button id="bWeave" type="button" aria-pressed="false"><kbd>W</kbd>Weave: Off</button>
+  <button id="bHud" type="button" aria-pressed="false"><kbd>H</kbd>Hide HUD</button>
+  <button id="bFlip" type="button">Flip camera</button>
+</div>
+
+<div class="hud hint hideable">Raise both hands, palms to the camera. Pull apart to tighten the strings. Touch matching fingertips to spark.</div>
+
+<div class="panel" id="panel">
+  <h1>Neon Cat's Cradle</h1>
+  <p>Your webcam tracks both hands. Glowing strings run between matching fingertips.</p>
+  <ol>
+    <li>Allow camera access when the browser asks.</li>
+    <li class="desk-only">Stand back so both hands fit in frame.</li>
+    <li class="touch-only">Prop the phone up, landscape works best, so both hands are free and in frame.</li>
+    <li class="desk-only">Press <b>V</b> for the dark CRT view, <b>W</b> to cross the strings.</li>
+    <li class="touch-only">Tap <b>View</b> for the dark CRT view, <b>Weave</b> to cross the strings.</li>
+  </ol>
+  <button class="go" id="bStart" type="button">Start camera</button>
+  <div class="status" id="status" role="status"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
+<script>
+"use strict";
+
+// ---------- constants ----------
+const MP_BASE = "https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240";
+const CYAN = [0, 240, 255], MAG = [255, 43, 214], YEL = [255, 226, 58];
+const TIPS = [4, 8, 12, 16, 20];
+const BONES = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],
+               [9,13],[13,14],[14,15],[15,16],[13,17],[0,17],[17,18],[18,19],[19,20]];
+const PALM = [0, 1, 5, 9, 13, 17];
+const FINGER_JOINTS = [[0,1,2,3,4],[5,6,7,8],[9,10,11,12],[13,14,15,16],[17,18,19,20]];
+const STRAIGHT = [[0,0],[1,1],[2,2],[3,3],[4,4]];   // thumb-thumb, index-index, ...
+const CROSS = [[0,4],[1,3],[3,1],[4,0]];            // the cradle "X"
+const SEGMENTS = 18;
+const STEP = 1 / 60;
+const MAX_PARTICLES = 700;
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+// Phones and tablets: lighter model, smaller camera frames, softer glow.
+const IS_TOUCH = matchMedia("(pointer: coarse)").matches;
+const GLOW = IS_TOUCH ? .6 : 1;
+if (IS_TOUCH) document.body.classList.add("touch");
+
+// ---------- state ----------
+const $ = id => document.getElementById(id);
+const video = $("video");
+const app = {
+  mode: "camera", weave: false, running: false, gotFirstResult: false,
+  hands: null, busy: false, detFrames: 0, detFps: 0, renderFps: 0,
+  time: 0, acc: 0, cradleAlpha: 0, needReset: true, tension: 0,
+  facing: "user", mirror: true, stream: null, wakeLock: null,
+};
+const cover = { ox: 0, oy: 0, w: 1, h: 1 };
+let bgGrad = null;
+
+// cyan -> magenta -> yellow, p in [0,1]
+function pal(p) {
+  p = p < 0 ? 0 : p > 1 ? 1 : p;
+  const [a, b, t] = p < .5 ? [CYAN, MAG, p / .5] : [MAG, YEL, (p - .5) / .5];
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+}
+const rgba = (c, a) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`;
+const FINGER_COLORS = [0, .25, .5, .75, 1].map(p => pal(p));
+
+// ---------- hand slots (L / R on screen), smoothed ----------
+function makeSlot() {
+  return { pts: Array.from({ length: 21 }, () => ({ x: 0, y: 0 })), target: null,
+           present: false, lastSeen: -1e9, alpha: 0, scale: 80, fresh: true };
+}
+const slots = { L: makeSlot(), R: makeSlot() };
+
+function onResults(res) {
+  const now = performance.now();
+  app.detFrames++;
+  if (!app.gotFirstResult) { app.gotFirstResult = true; $("panel").hidden = true; document.body.classList.add("live"); }
+  const lms = res.multiHandLandmarks || [];
+  let assign = [];
+  // Landmarks arrive in display space (selfieMode mirrors them for the front camera):
+  // smaller x = left side of the screen.
+  if (lms.length >= 2) {
+    assign = lms[0][0].x <= lms[1][0].x ? [["L", lms[0]], ["R", lms[1]]] : [["L", lms[1]], ["R", lms[0]]];
+  } else if (lms.length === 1) {
+    // Keep a lone hand in the slot it was already in, so it doesn't jump sides.
+    const lm = lms[0], wx = cover.ox + lm[0].x * cover.w, wy = cover.oy + lm[0].y * cover.h;
+    const d = s => s.present ? Math.hypot(s.pts[0].x - wx, s.pts[0].y - wy) : Infinity;
+    const dl = d(slots.L), dr = d(slots.R);
+    const k = dl === Infinity && dr === Infinity ? (lm[0].x < .5 ? "L" : "R") : dl <= dr ? "L" : "R";
+    assign = [[k, lm]];
+  }
+  for (const [k, lm] of assign) {
+    const s = slots[k];
+    s.target = lm; s.lastSeen = now;
+    if (!s.present) { s.present = true; s.fresh = true; }
+  }
+  // Integration point for Jarvis / gesture browsing: raw normalized landmarks (0..1, display space).
+  window.dispatchEvent(new CustomEvent("jarvis:hands", {
+    detail: { t: now, left: assign.find(a => a[0] === "L")?.[1] || null, right: assign.find(a => a[0] === "R")?.[1] || null },
+  }));
+}
+
+function clearSlots() {
+  for (const s of [slots.L, slots.R]) { s.present = false; s.target = null; s.alpha = 0; s.fresh = true; }
+  app.cradleAlpha = 0; app.needReset = true;
+}
+
+function updateSlots(dt, now) {
+  const k = 1 - Math.pow(0.42, dt * 60);       // frame-rate independent smoothing
+  for (const s of [slots.L, slots.R]) {
+    if (s.present && now - s.lastSeen > 160) s.present = false;
+    s.alpha += ((s.present ? 1 : 0) - s.alpha) * Math.min(1, dt * 10);
+    if (!s.target) continue;
+    for (let i = 0; i < 21; i++) {
+      const tx = cover.ox + s.target[i].x * cover.w, ty = cover.oy + s.target[i].y * cover.h, p = s.pts[i];
+      if (s.fresh) { p.x = tx; p.y = ty; } else { p.x += (tx - p.x) * k; p.y += (ty - p.y) * k; }
+    }
+    s.fresh = false;
+    s.scale = Math.max(20, Math.hypot(s.pts[9].x - s.pts[0].x, s.pts[9].y - s.pts[0].y));
+  }
+}
+
+// ---------- elastic strings: verlet rope pinned at both fingertips ----------
+class Rope {
+  constructor() {
+    const n = this.n = SEGMENTS + 1;
+    this.x = new Float32Array(n); this.y = new Float32Array(n);
+    this.px = new Float32Array(n); this.py = new Float32Array(n);
+    this.rx = new Float32Array(n); this.ry = new Float32Array(n);
+    this.t = 0;
+  }
+  reset(ax, ay, bx, by) {
+    for (let i = 0; i < this.n; i++) {
+      const f = i / (this.n - 1);
+      this.x[i] = this.px[i] = ax + (bx - ax) * f;
+      this.y[i] = this.py[i] = ay + (by - ay) * f;
+    }
+  }
+  step(ax, ay, bx, by, rest, g) {
+    const { n, x, y, px, py } = this;
+    for (let i = 1; i < n - 1; i++) {
+      const vx = (x[i] - px[i]) * .982, vy = (y[i] - py[i]) * .982;
+      px[i] = x[i]; py[i] = y[i];
+      x[i] += vx; y[i] += vy + g;
+    }
+    x[0] = ax; y[0] = ay; x[n - 1] = bx; y[n - 1] = by;
+    const seg = rest / (n - 1);
+    for (let it = 0; it < 8; it++) {
+      for (let i = 0; i < n - 1; i++) {
+        const dx = x[i + 1] - x[i], dy = y[i + 1] - y[i], d = Math.hypot(dx, dy);
+        if (d <= seg) continue;                     // strings resist stretch, not slack
+        const wa = i === 0 ? 0 : 1, wb = i + 1 === n - 1 ? 0 : 1;
+        if (!(wa + wb)) continue;
+        const c = (d - seg) / d * .9 / (wa + wb);
+        x[i] += dx * c * wa; y[i] += dy * c * wa;
+        x[i + 1] -= dx * c * wb; y[i + 1] -= dy * c * wb;
+      }
+    }
+    this.t = Math.hypot(bx - ax, by - ay) / rest;   // >1 means stretched
+  }
+}
+const ropes = [...STRAIGHT.map(p => ({ pair: p, cross: false })), ...CROSS.map(p => ({ pair: p, cross: true }))]
+  .map(r => Object.assign(r, { rope: new Rope() }));
+
+// ---------- particles ----------
+const parts = [], rings = [], armed = [true, true, true, true, true];
+function burst(x, y, scale) {
+  const n = reduceMotion ? 16 : 70, s = scale / 90;
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, sp = (1.5 + Math.random() * 7) * s;
+    parts.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 1,
+                 decay: .012 + Math.random() * .022, c: pal(Math.random()), r: .8 + Math.random() * 2 });
+  }
+  if (parts.length > MAX_PARTICLES) parts.splice(0, parts.length - MAX_PARTICLES);
+  rings.push({ x, y, r: 4, max: scale * 1.8, life: 1 });
+}
+function stepParticles() {
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i];
+    p.vx *= .95; p.vy = p.vy * .95 + .05; p.x += p.vx; p.y += p.vy; p.life -= p.decay;
+    if (p.life <= 0) parts.splice(i, 1);
+  }
+  for (let i = rings.length - 1; i >= 0; i--) {
+    const r = rings[i];
+    r.r += (r.max - r.r) * .14; r.life -= .035;
+    if (r.life <= 0) rings.splice(i, 1);
+  }
+}
+
+// ---------- p5 ----------
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  pixelDensity(1);              // shadowBlur cost scales with pixel count; 1x keeps it real-time
+  buildBackground();
+}
+function windowResized() { resizeCanvas(windowWidth, windowHeight); buildBackground(); }
+
+function buildBackground() {
+  const ctx = drawingContext;
+  bgGrad = ctx.createRadialGradient(width / 2, height * .45, 0, width / 2, height * .45, Math.max(width, height) * .75);
+  bgGrad.addColorStop(0, "#0c1a4d");
+  bgGrad.addColorStop(.55, "#060d2e");
+  bgGrad.addColorStop(1, "#020514");
+}
+
+function computeCover() {
+  const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
+  const s = Math.max(width / vw, height / vh);
+  cover.w = vw * s; cover.h = vh * s;
+  cover.ox = (width - cover.w) / 2; cover.oy = (height - cover.h) / 2;
+}
+
+function demoEndpoints(t) {
+  // Idle animation behind the start panel: two drifting fans of "fingertips".
+  const cx = width / 2, cy = height * .55, sc = Math.min(width, height) * .11;
+  const spread = width * .16 + Math.sin(t * .55) * width * .09;
+  const L = [], R = [];
+  for (let i = 0; i < 5; i++) {
+    const fy = (i - 2) * sc * .55;
+    L.push({ x: cx - spread - Math.cos(i * .7 - 1.4) * sc * .5, y: cy + fy + Math.sin(t * .8 + i * .3) * 14 });
+    R.push({ x: cx + spread + Math.cos(i * .7 - 1.4) * sc * .5, y: cy + fy + Math.sin(t * .8 + 2 + i * .3) * 14 });
+  }
+  return { L, R, scale: sc };
+}
+
+function draw() {
+  const now = performance.now();
+  const dt = Math.min(.05, deltaTime / 1000);
+  app.time += dt;
+  const ctx = drawingContext;
+  computeCover();
+
+  // background
+  ctx.globalCompositeOperation = "source-over"; ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+  if (app.mode === "camera" && app.running && video.readyState >= 2) {
+    ctx.fillStyle = "#02040c"; ctx.fillRect(0, 0, width, height);
+    if (app.mirror) {
+      ctx.save();
+      ctx.translate(cover.ox + cover.w, cover.oy); ctx.scale(-1, 1);   // mirror the selfie camera
+      ctx.drawImage(video, 0, 0, cover.w, cover.h);
+      ctx.restore();
+    } else {
+      ctx.drawImage(video, cover.ox, cover.oy, cover.w, cover.h);
+    }
+    ctx.fillStyle = "rgba(3,6,22,0.58)"; ctx.fillRect(0, 0, width, height);
+  } else {
+    ctx.fillStyle = bgGrad; ctx.fillRect(0, 0, width, height);
+  }
+
+  updateSlots(dt, now);
+
+  // string endpoints
+  let L = null, R = null, scale = 80, both = false;
+  if (app.running) {
+    if (slots.L.target && slots.R.target) {
+      L = TIPS.map(i => slots.L.pts[i]); R = TIPS.map(i => slots.R.pts[i]);
+      scale = (slots.L.scale + slots.R.scale) / 2;
+      both = slots.L.present && slots.R.present;
+    }
+  } else {
+    const d = demoEndpoints(app.time); L = d.L; R = d.R; scale = d.scale; both = true;
+  }
+  if (both && app.cradleAlpha < .02) app.needReset = true;
+  app.cradleAlpha += ((both ? 1 : 0) - app.cradleAlpha) * Math.min(1, dt * (both ? 8 : 5));
+
+  // fixed-step physics
+  const rest = scale * 4.2, g = .32 * (height / 800);
+  if (L && app.needReset) { for (const r of ropes) r.rope.reset(L[r.pair[0]].x, L[r.pair[0]].y, R[r.pair[1]].x, R[r.pair[1]].y); app.needReset = false; }
+  app.acc += dt;
+  let steps = 0;
+  while (app.acc >= STEP && steps < 4) {
+    if (L) for (const r of ropes) {
+      if (r.cross && !app.weave) continue;
+      const a = L[r.pair[0]], b = R[r.pair[1]];
+      r.rope.step(a.x, a.y, b.x, b.y, rest, g);
+    }
+    stepParticles();
+    app.acc -= STEP; steps++;
+  }
+  if (steps === 4) app.acc = 0;
+
+  // fingertip touches -> sparks
+  if (app.running && both && app.cradleAlpha > .6) {
+    const thr = scale * .3;
+    for (let i = 0; i < 5; i++) {
+      const d = Math.hypot(L[i].x - R[i].x, L[i].y - R[i].y);
+      if (armed[i] && d < thr) { burst((L[i].x + R[i].x) / 2, (L[i].y + R[i].y) / 2, scale); armed[i] = false; }
+      else if (d > thr * 2) armed[i] = true;
+    }
+  }
+
+  // silhouettes (Void view) under everything else
+  if (app.mode === "void" && app.running) for (const s of [slots.L, slots.R]) drawSilhouette(ctx, s);
+
+  // neon layer
+  ctx.globalCompositeOperation = "lighter";
+  if (L && app.cradleAlpha > .01) drawStrings(ctx);
+  if (app.running) { for (const s of [slots.L, slots.R]) drawHand(ctx, s); }
+  else if (L) drawDemoTips(ctx, L, R);
+  drawParticles(ctx);
+
+  ctx.globalCompositeOperation = "source-over"; ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+}
+
+function drawStrings(ctx) {
+  let tSum = 0, tN = 0;
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  for (let k = 0; k < ropes.length; k++) {
+    const { rope: r, cross } = ropes[k];
+    if (cross && !app.weave) continue;
+    const t = r.t, n = r.n;
+    if (!cross) { tSum += t; tN++; }
+    const ax = r.x[0], ay = r.y[0], bx = r.x[n - 1], by = r.y[n - 1];
+
+    // taut strings hum: a standing-wave wobble across the string
+    let nx = -(by - ay), ny = bx - ax;
+    const len = Math.hypot(nx, ny) || 1; nx /= len; ny /= len;
+    const amp = reduceMotion ? 0 : Math.min(5, Math.max(0, (t - 1.1) * 7));
+    const ph = Math.sin(app.time * 48 + k * 1.7) * amp;
+    for (let i = 0; i < n; i++) {
+      const w = Math.sin(Math.PI * i / (n - 1)) * ph;
+      r.rx[i] = r.x[i] + nx * w; r.ry[i] = r.y[i] + ny * w;
+    }
+    ctx.beginPath();
+    ctx.moveTo(r.rx[0], r.ry[0]);
+    for (let i = 1; i < n - 1; i++) ctx.quadraticCurveTo(r.rx[i], r.ry[i], (r.rx[i] + r.rx[i + 1]) / 2, (r.ry[i] + r.ry[i + 1]) / 2);
+    ctx.lineTo(r.rx[n - 1], r.ry[n - 1]);
+
+    // slack = cyan->magenta and thick; stretched = magenta->yellow and thin
+    const shift = Math.min(1, Math.max(0, (t - .55) / 1.4)) * .5;
+    const grad = ctx.createLinearGradient(ax, ay, bx, by);
+    grad.addColorStop(0, rgba(pal(shift), 1));
+    grad.addColorStop(.5, rgba(pal(shift + .25), 1));
+    grad.addColorStop(1, rgba(pal(shift + .5), 1));
+    const weight = cross ? .6 : 1, a = app.cradleAlpha * (cross ? .7 : 1);
+    const w = map(t, .4, 2.0, 3.6, .9, true) * weight;
+
+    ctx.strokeStyle = grad;
+    ctx.globalAlpha = a * .6;
+    ctx.lineWidth = w * 2.6;
+    ctx.shadowColor = rgba(pal(shift + .25), 1);
+    ctx.shadowBlur = (14 + Math.min(2, t) * 10) * GLOW;
+    ctx.stroke();
+
+    ctx.shadowBlur = 0;                         // laser core: thin, bright, unblurred
+    ctx.globalAlpha = a * (.55 + .45 * Math.min(1, t / 1.5));
+    ctx.lineWidth = Math.max(.7, w * .45);
+    ctx.strokeStyle = "rgba(255,255,255,0.9)";
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  if (tN) app.tension = tSum / tN;
+}
+
+function drawSilhouette(ctx, s) {
+  if (!s.target || s.alpha < .02) return;
+  const p = s.pts, w = s.scale * .34;
+  ctx.globalAlpha = s.alpha;
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  ctx.beginPath();
+  for (const [a, b] of BONES) { ctx.moveTo(p[a].x, p[a].y); ctx.lineTo(p[b].x, p[b].y); }
+  // glowing rim
+  ctx.strokeStyle = "rgba(90,150,255,0.55)"; ctx.lineWidth = w + 5;
+  ctx.shadowColor = "rgba(60,120,255,1)"; ctx.shadowBlur = 22 * GLOW;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  // opaque body
+  ctx.strokeStyle = "#0a1544"; ctx.lineWidth = w; ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(p[PALM[0]].x, p[PALM[0]].y);
+  for (let i = 1; i < PALM.length; i++) ctx.lineTo(p[PALM[i]].x, p[PALM[i]].y);
+  ctx.closePath();
+  ctx.fillStyle = "#0a1544"; ctx.fill();
+  ctx.globalAlpha = 1;
+}
+
+function drawHand(ctx, s) {
+  if (!s.target || s.alpha < .02) return;
+  const p = s.pts;
+  // thin skeleton
+  ctx.globalAlpha = s.alpha * .4; ctx.shadowBlur = 0;
+  ctx.strokeStyle = "rgba(160,220,255,1)"; ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  for (const [a, b] of BONES) { ctx.moveTo(p[a].x, p[a].y); ctx.lineTo(p[b].x, p[b].y); }
+  ctx.stroke();
+
+  // neon joints, batched one path per finger so shadowBlur runs 5x per hand, not 21x
+  const r = Math.min(7, Math.max(2.5, s.scale * .04));
+  ctx.globalAlpha = s.alpha;
+  ctx.shadowBlur = 16 * GLOW;
+  for (let f = 0; f < 5; f++) {
+    const c = FINGER_COLORS[f];
+    ctx.fillStyle = rgba(c, .95); ctx.shadowColor = rgba(c, 1);
+    ctx.beginPath();
+    for (const j of FINGER_JOINTS[f]) {
+      const rr = TIPS.includes(j) ? r * 1.6 : r;
+      ctx.moveTo(p[j].x + rr, p[j].y); ctx.arc(p[j].x, p[j].y, rr, 0, Math.PI * 2);
+    }
+    ctx.fill();
+  }
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = "rgba(255,255,255,0.95)";
+  ctx.beginPath();
+  for (const j of TIPS) { ctx.moveTo(p[j].x + r * .6, p[j].y); ctx.arc(p[j].x, p[j].y, r * .6, 0, Math.PI * 2); }
+  ctx.fill();
+  ctx.globalAlpha = 1;
+}
+
+function drawDemoTips(ctx, L, R) {
+  ctx.shadowBlur = 14 * GLOW;
+  for (let i = 0; i < 5; i++) {
+    const c = FINGER_COLORS[i];
+    ctx.fillStyle = rgba(c, .9); ctx.shadowColor = rgba(c, 1);
+    ctx.beginPath();
+    ctx.arc(L[i].x, L[i].y, 5, 0, Math.PI * 2);
+    ctx.moveTo(R[i].x + 5, R[i].y); ctx.arc(R[i].x, R[i].y, 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.shadowBlur = 0;
+}
+
+function drawParticles(ctx) {
+  if (!parts.length && !rings.length) return;
+  ctx.shadowBlur = 0; ctx.lineCap = "round";
+  for (const p of parts) {
+    ctx.globalAlpha = p.life;
+    ctx.strokeStyle = rgba(p.c, 1); ctx.lineWidth = p.r * 1.6;
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x - p.vx * 3, p.y - p.vy * 3); ctx.stroke();
+  }
+  ctx.shadowColor = rgba(MAG, 1); ctx.shadowBlur = 20 * GLOW;
+  for (const r of rings) {
+    ctx.globalAlpha = r.life; ctx.strokeStyle = "rgba(255,255,255,1)"; ctx.lineWidth = 2.5 * r.life;
+    ctx.beginPath(); ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+}
+
+// ---------- camera + MediaPipe ----------
+function setStatus(msg, isErr) {
+  const el = $("status");
+  el.textContent = msg; el.classList.toggle("err", !!isErr);
+  $("panel").hidden = false;
+}
+
+function cameraError(e) {
+  const n = e && e.name;
+  return n === "NotAllowedError" ? (IS_TOUCH
+      ? "Camera access was blocked. Allow it in your browser's site settings (iPhone: Settings > Safari > Camera), then reload."
+      : "Camera access was blocked. Allow it from the camera icon in the address bar, then press Start again.")
+    : n === "NotFoundError" || n === "OverconstrainedError" ? "No matching camera found."
+    : n === "NotReadableError" ? "The camera is busy in another app. Close that app and try again."
+    : `Camera failed to start (${n || "unknown error"}).`;
+}
+
+// Phones get 640x480 frames: plenty for hand landmarks and much cheaper to process.
+async function openCamera(facing) {
+  const size = IS_TOUCH ? { width: { ideal: 640 }, height: { ideal: 480 } } : { width: { ideal: 1280 }, height: { ideal: 720 } };
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: facing, ...size } });
+  if (app.stream) app.stream.getTracks().forEach(t => t.stop());
+  app.stream = stream; app.facing = facing; app.mirror = facing === "user";
+  video.srcObject = stream;
+  await video.play();
+}
+
+async function keepAwake() {
+  try { if ("wakeLock" in navigator && document.visibilityState === "visible") app.wakeLock = await navigator.wakeLock.request("screen"); }
+  catch (e) { /* not granted: the screen may dim, nothing else breaks */ }
+}
+
+async function start() {
+  const btn = $("bStart");
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    setStatus("This browser can't reach the camera from here. Open the page over https (the GitHub Pages link) or http://localhost.", true);
+    return;
+  }
+  if (typeof Hands === "undefined") {
+    setStatus("MediaPipe didn't load. Check your internet connection and reload.", true);
+    return;
+  }
+  btn.disabled = true;
+  setStatus("Requesting camera…");
+  try { await openCamera("user"); }
+  catch (e) { btn.disabled = false; setStatus(cameraError(e), true); return; }
+
+  setStatus("Loading hand model… (first load takes a few seconds)");
+  const hands = new Hands({ locateFile: f => `${MP_BASE}/${f}` });
+  hands.setOptions({
+    maxNumHands: 2,
+    modelComplexity: IS_TOUCH ? 0 : 1,   // lite model on phones, full model on computers
+    selfieMode: app.mirror,              // mirror input so landmarks and handedness match the mirrored view
+    minDetectionConfidence: .6,
+    minTrackingConfidence: .5,
+  });
+  hands.onResults(onResults);
+  app.hands = hands;
+  app.running = true;
+  keepAwake();
+  detectLoop();
+}
+
+async function flipCamera() {
+  if (!app.running) return;
+  const b = $("bFlip"); b.disabled = true;
+  try {
+    await openCamera(app.facing === "user" ? "environment" : "user");
+    app.hands.setOptions({ selfieMode: app.mirror });
+    clearSlots();
+  } catch (e) {
+    setStatus(cameraError(e), true);
+    setTimeout(() => { if (app.gotFirstResult) $("panel").hidden = true; }, 3000);
+  }
+  b.disabled = false;
+}
+
+// Coming back to the tab: phones pause the camera and drop the wake lock while hidden.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible" || !app.running) return;
+  if (video.paused) video.play().catch(() => {});
+  keepAwake();
+});
+
+// One frame in flight at a time; rendering runs at full rate and interpolates between detections.
+async function detectLoop() {
+  if (!app.running) return;
+  if (!app.busy && video.readyState >= 2) {
+    app.busy = true;
+    try { await app.hands.send({ image: video }); }
+    catch (e) { console.error(e); if (!app.gotFirstResult) { setStatus("Hand tracking failed to start. Reload the page to try again.", true); app.running = false; } }
+    app.busy = false;
+  }
+  if ("requestVideoFrameCallback" in video) video.requestVideoFrameCallback(detectLoop);
+  else requestAnimationFrame(detectLoop);
+}
+
+// ---------- HUD + controls ----------
+function setMode(m) {
+  app.mode = m;
+  document.body.classList.toggle("void", m === "void");
+  const b = $("bView");
+  b.innerHTML = `<kbd>V</kbd>View: ${m === "void" ? "Void" : "Camera"}`;
+  b.setAttribute("aria-pressed", String(m === "void"));
+}
+function setWeave(on) {
+  app.weave = on;
+  if (on) app.needReset = true;
+  const b = $("bWeave");
+  b.innerHTML = `<kbd>W</kbd>Weave: ${on ? "On" : "Off"}`;
+  b.setAttribute("aria-pressed", String(on));
+}
+function toggleHud() {
+  const clean = document.body.classList.toggle("clean");
+  const b = $("bHud");
+  b.innerHTML = `<kbd>H</kbd>${clean ? "Show HUD" : "Hide HUD"}`;
+  b.setAttribute("aria-pressed", String(clean));
+}
+$("bView").addEventListener("click", () => setMode(app.mode === "void" ? "camera" : "void"));
+$("bWeave").addEventListener("click", () => setWeave(!app.weave));
+$("bHud").addEventListener("click", toggleHud);
+$("bStart").addEventListener("click", start);
+$("bFlip").addEventListener("click", flipCamera);
+
+function keyPressed() {
+  const k = (key || "").toLowerCase();
+  if (k === "v") setMode(app.mode === "void" ? "camera" : "void");
+  else if (k === "w") setWeave(!app.weave);
+  else if (k === "h") toggleHud();
+}
+
+setInterval(() => {
+  app.detFps = app.detFrames; app.detFrames = 0;
+}, 1000);
+setInterval(() => {
+  const n = (slots.L.present ? 1 : 0) + (slots.R.present ? 1 : 0);
+  $("hHands").textContent = `${app.running ? n : "-"} / 2`;
+  const live = app.cradleAlpha > .3;
+  $("hTension").textContent = live ? `${Math.round(app.tension * 100)}%` : "--";
+  $("hMeter").style.width = live ? `${Math.min(100, app.tension / 2.2 * 100)}%` : "0%";
+  $("hFps").textContent = typeof frameRate === "function" ? `${Math.round(frameRate())} fps` : "--";
+  $("hDet").textContent = app.running ? `${app.detFps} fps` : "idle";
+}, 250);
+
+/*
+  RUNNING IT
+  - Online: the GitHub Pages link (https, so phones allow the camera).
+  - Locally: python3 -m http.server 8000, then open http://localhost:8000/
+  - Needs internet on first load (p5.js, MediaPipe model and WASM come from CDNs).
+
+  CONTROLS (keyboard / buttons)
+  V  View: Camera <-> Void (hidden video, midnight blue, hand silhouettes, CRT scanlines)
+  W  Weave: adds the crossed cat's-cradle strings
+  H  Hide / show the HUD
+  Flip camera (phones): front <-> back camera
+
+  JARVIS HOOK
+  window.addEventListener("jarvis:hands", e => e.detail)  ->  { t, left, right }
+  left/right are 21 MediaPipe landmarks {x, y, z} normalized to the screen, or null.
+*/
+</script>
+</body>
+</html>
